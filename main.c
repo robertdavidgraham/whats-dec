@@ -13,6 +13,7 @@
     - message-authentication (MAC): HMAC-SHA256
     - pseudo-random-function (PRF): HKDF-SHA256
 */
+#define _CRT_SECURE_NO_WARNINGS
 #include "crypto-aes256.h"
 #include "crypto-base64.h"
 #include "crypto-hex.h"
@@ -26,20 +27,75 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(WIN32) || defined(_WIN32)
+#define snprintf _snprintf
+#endif
+
+static const char *infostrings[6] = {
+		"WhatsApp Video Keys", /* default value */
+        "WhatsApp Image Keys",
+		"WhatsApp Video Keys",
+		"WhatsApp Audio Keys",
+		"WhatsApp Document Keys",
+        0
+};
+
+/**
+ * This holds the configuration parsed from the command-line.
+ */
 struct configuration {
   size_t mediakey_length;
   unsigned char mediakey[32];
   char infilename[512];
   char outfilename[512];
+  size_t mediatype;
 };
 
-int status(int test_result, const char *name) {
+static size_t media_type(const char *filename)
+{
+    static const char *types[6][32] = {
+        {0},
+        {
+        "image", ".gif", ".jpg", ".jpeg", ".png", ".tiff", ".raw", ".svg", 0},
+        {
+        "video", ".mp4", ".mpeg", ".mpg", ".mpeg4", ".mpv", ".qt", ".quicktime",
+        ".vc1", ".flv", ".vob", ".ogg", ".ogv", ".avi", ".mov", ".wmv",
+        ".m4p", ".m4v", ".3gp", ".3g2", 0},
+        {
+        "audio", ".mp3", ".aiff", ".aac", ".flac", ".wav", ".webm", 0},
+        {
+        "doc", ".doc", ".pdf", 0
+        },
+        0
+    };
+    size_t i;
+
+    for (i=0; i<4; i++) {
+        size_t j;
+        for (j=0; types[i][j]; j++) {
+            const char *ext = types[i][j];
+            if (strcmp(ext, filename + strlen(filename) - strlen(ext)) == 0)
+                return i;
+        }
+    }
+    return 0;
+}
+
+/**
+ * For selftests, prints a message when the test fails/succeeds
+ */
+static int status(int test_result, const char *name) {
   if (test_result)
     fprintf(stderr, "[-] %s: failed\n", name);
   else
     fprintf(stderr, "[+] %s: succeeded\n", name);
   return test_result;
 }
+
+/**
+ * Call all the quick selftest functions for the crypto modules, to make
+ * sure all the routines are running well. It's not a comprehensive test,
+ * though. */
 static void selftest(void) {
   int failure_count = 0;
 
@@ -49,14 +105,21 @@ static void selftest(void) {
   exit(status(failure_count, "selftest") != 0);
 }
 
+/**
+ * Prints a quick message telling people how to use this module.
+ */
 static void print_help(void) {
   fprintf(stderr,
           "Usage:\n whats-dec --key <key> --in <filename> --out <filename>\n");
   exit(1);
 }
 
+/**
+ * Parse a single command-line parameter
+ */
 static void parse_param(struct configuration *cfg, const char *name,
                         const char *value) {
+  /* --mediakey */
   if (strcmp(name, "key") == 0 || strcmp(name, "mediakey") == 0) {
     cfg->mediakey_length =
         hex_decode(value, cfg->mediakey, sizeof(cfg->mediakey));
@@ -69,6 +132,7 @@ static void parse_param(struct configuration *cfg, const char *name,
     fprintf(stderr, "[-] invalid key, need %u-bytes encoded as hex or base64\n",
             (unsigned)sizeof(cfg->mediakey));
     exit(1);
+  /* --in */
   } else if (strcmp(name, "in") == 0 || strcmp(name, "filename") == 0 ||
              strcmp(name, "infilename") == 0) {
     if (strlen(value) + 1 >= sizeof(cfg->infilename)) {
@@ -77,13 +141,24 @@ static void parse_param(struct configuration *cfg, const char *name,
     } else {
       snprintf(cfg->infilename, sizeof(cfg->infilename), "%s", value);
     }
+  /* --out */
   } else if (strcmp(name, "out") == 0 || strcmp(name, "outfilename") == 0) {
     if (strlen(value) + 1 >= sizeof(cfg->outfilename)) {
       fprintf(stderr, "[-] outfilename too long\n");
       exit(1);
-    } else {
-      snprintf(cfg->outfilename, sizeof(cfg->outfilename), "%s", value);
-    }
+    } 
+    snprintf(cfg->outfilename, sizeof(cfg->outfilename), "%s", value);
+    if (cfg->mediatype == 0)
+        cfg->mediatype = media_type(cfg->outfilename);
+    
+  /* --type */
+  } else if (strcmp(name, "type") == 0 || strcmp(name, "mediatype") == 0) {
+      size_t t = media_type(name);
+      if (t == 0) {
+          fprintf(stderr, "[-] unknown media type=%s. Valid parms: video, audio, image, doc\n", value);
+          exit(1);
+      }
+      cfg->mediatype = t;
   } else {
     fprintf(stderr, "[-] unknown parameter: --%s (try --help)\n", name);
     exit(1);
@@ -92,7 +167,7 @@ static void parse_param(struct configuration *cfg, const char *name,
 
 struct configuration parse_command_line(int argc, char *argv[]) {
   int i;
-  struct configuration cfg = {0};
+  struct configuration cfg = {0,{0},{0},{0},0};
 
   for (i = 1; i < argc; i++) {
     if (argv[i][0] != '-') {
@@ -191,14 +266,28 @@ void decrypt_stream(FILE *fp_in, FILE *fp_out, const unsigned char *aeskey,
              (unsigned)bytes_read);
       exit(1);
     } else {
-      unsigned padding_length = prevblock[15];
-      unsigned last_length = sizeof(prevblock) - padding_length;
+      unsigned padding_length;
+      unsigned last_length;
+
+      /* The number of bytes of padding are given by the last byte in the
+       * the block, and should have a value from between [1..16]. If it's
+       * over that number, then it means corruption happened, in which the
+       * MAC (below) should also not check out */
+      padding_length =  prevblock[15];
       if (padding_length > 16) {
         printf("[-] invalid padding length: %u (must be 16 or less)\n",
                padding_length);
-        exit(1);
+        padding_length = 16;
       }
+
+      /* Here we print the last block, minus the padding. If the padding
+       * length is 16 bytes, then the final block will be empty */
+      last_length = sizeof(prevblock) - padding_length;
       hex_print("[+] block[n] = ", prevblock, last_length);
+
+      /* Here we print the padding and MAC. These are additional [11..26]
+       * bytes at the end of the file that the FTI researchers falsely
+       * believed were an exploit or malware. */
       hex_print("[+]-padding = ", prevblock + last_length, padding_length);
       hex_print("[+]-mac = ", block, bytes_read);
 
@@ -234,6 +323,7 @@ int main(int argc, char *argv[]) {
   unsigned char mackey[32] = {0};
   FILE *fp_in;
   FILE *fp_out;
+  static const char *medianames[6] = {"video", "image", "video", "audio", "doc", "unknown"};
 
   /* Read in the command-line configuration */
   cfg = parse_command_line(argc, argv);
@@ -263,8 +353,8 @@ int main(int argc, char *argv[]) {
    * it using a pseudo-random function.
    */
   crypto_hkdf(0, 0, cfg.mediakey, cfg.mediakey_length,
-              (const unsigned char *)"WhatsApp Video Keys", 19, okm,
-              sizeof(okm));
+              infostrings[cfg.mediatype], strlen(infostrings[cfg.mediatype]), 
+              okm, sizeof(okm));
   memcpy(iv, okm + 0, sizeof(iv));
   memcpy(aeskey, okm + 16, sizeof(aeskey));
   memcpy(mackey, okm + 48, sizeof(mackey));
@@ -272,6 +362,8 @@ int main(int argc, char *argv[]) {
   /* Print the extracted values */
   printf("[+] ciphertext = %s\n", cfg.infilename);
   printf("[+] plaintext  = %s\n", cfg.outfilename);
+  printf("[+] mediatype = %s\n", medianames[cfg.mediatype]);
+  printf("[+] info = %s\n", infostrings[cfg.mediatype]);
   hex_print("[+] mediakey = ", cfg.mediakey, cfg.mediakey_length);
   hex_print("[+] mediakey.iv = ", iv, sizeof(iv));
   hex_print("[+] mediakey.aeskey = ", aeskey, sizeof(aeskey));

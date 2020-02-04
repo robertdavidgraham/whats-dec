@@ -24,6 +24,10 @@
  */
 #include "crypto-sha256.h"
 
+#ifdef _MSC_VER
+#define inline __inline
+#endif
+
 /**
  * From FIPS 180-4 §3.1 - Bit Strings and Integers
  * Throughout this specification, the “big-endian” convention is used when
