@@ -59,7 +59,7 @@ Simply compile the files together, as in:
  is the download URL for the encrypted media file, and `ZMEDIAKEY` needed to
  decrypt it.
 
- ## Examle usage
+ ## Example usage
 
  A friend used WhatsApp to send a video to my iPhone. I backed up the phone
  to my computer, and using the steps above, extracted both the URL of the
@@ -71,23 +71,23 @@ Simply compile the files together, as in:
  I used the program `curl` to download the encrypted video. I then used this program
  to decrypt the file.
 
-  $ curl https://mmg-fna.whatsapp.net/d/f/AsnGB7gNh6Yw52MScbJyTRMo3NCmzMpesUIYyFmEZ0lR.enc -o rob.enc
-    % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
-                                   Dload  Upload   Total   Spent    Left  Speed
-  100 21.1M  100 21.1M    0     0  10.2M      0  0:00:02  0:00:02 --:--:-- 10.2M
-  $ ./whats-dec --key TKgNZsaEAvtTzNEgfDqd5UAdmnBNUcJtN7mxMKunAPw= --in rob.enc --out rob.mp4
-  [+] ciphertext = rob.enc
-  [+] plaintext  = rob.mp4
-  [+] mediakey = 4ca80d66c68402fb53ccd1207c3a9de5 401d9a704d51c26d37b9b130aba700fc
-  [+] mediakey.iv = 4367627b7897b3e4efaef9a38cb49611
-  [+] mediakey.aeskey = 234b96b5349e39f221481eb91b25ef20 a2a93b68b37eb5785b51aadda36150db
-  [+] mediakey.mackey = a329f783e12eb633fce420a03d79cc83 4804f5f9931b53e150b92a3c04564ec7
-  [+] block[0] = 000000206674797069736f6d00000200
-  [+] block[n] = 38fc59f852020314216e
-  [+]-padding = 060606060606
-  [+]-mac = 03017057a92305495b1b
-  [+] MAC = 03017057a92305495b1b07aca393fdff 030280957c08bd2f01e29bae67a7dbeb
-  [+] matched! (verified not corrupted)
+    $ curl https://mmg-fna.whatsapp.net/d/f/AsnGB7gNh6Yw52MScbJyTRMo3NCmzMpesUIYyFmEZ0lR.enc -o rob.enc
+      % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                    Dload  Upload   Total   Spent    Left  Speed
+    100 21.1M  100 21.1M    0     0  10.2M      0  0:00:02  0:00:02 --:--:-- 10.2M
+    $ ./whats-dec --key TKgNZsaEAvtTzNEgfDqd5UAdmnBNUcJtN7mxMKunAPw= --in rob.enc --out rob.mp4
+    [+] ciphertext = rob.enc
+    [+] plaintext  = rob.mp4
+    [+] mediakey = 4ca80d66c68402fb53ccd1207c3a9de5 401d9a704d51c26d37b9b130aba700fc
+    [+] mediakey.iv = 4367627b7897b3e4efaef9a38cb49611
+    [+] mediakey.aeskey = 234b96b5349e39f221481eb91b25ef20 a2a93b68b37eb5785b51aadda36150db
+    [+] mediakey.mackey = a329f783e12eb633fce420a03d79cc83 4804f5f9931b53e150b92a3c04564ec7
+    [+] block[0] = 000000206674797069736f6d00000200
+    [+] block[n] = 38fc59f852020314216e
+    [+]-padding = 060606060606
+    [+]-mac = 03017057a92305495b1b
+    [+] MAC = 03017057a92305495b1b07aca393fdff 030280957c08bd2f01e29bae67a7dbeb
+    [+] matched! (verified not corrupted)
 
 At the end of the file are additional `padding` and `mac` fields. This program clearly
 decrypts those bytes so that you can be certain there is no malware inside them.
