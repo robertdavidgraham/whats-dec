@@ -13,9 +13,9 @@
 #include <stddef.h>
 
 typedef struct {
-  SHA256_CTX hashctx;
-  unsigned char key0[64];
-  size_t key0_length;
+    SHA256_CTX hashctx;
+    unsigned char key0[64];
+    size_t key0_length;
 } HMAC_CTX;
 
 void hmac_sha256_init(HMAC_CTX *ctx, const void *v_key, size_t key_length);

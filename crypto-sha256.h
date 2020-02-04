@@ -13,14 +13,14 @@
 #include <stddef.h>
 
 typedef struct SHA256state_st {
-  unsigned h[8];
-  unsigned bitcount_low;
-  unsigned bitcount_high;
-  struct {
-    unsigned char buf[64];
-    unsigned count;
-  } partial;
-  unsigned md_len;
+    unsigned h[8];
+    unsigned bitcount_low;
+    unsigned bitcount_high;
+    struct {
+        unsigned char buf[64];
+        unsigned count;
+    } partial;
+    unsigned md_len;
 } SHA256_CTX;
 
 int SHA256_Init(SHA256_CTX *ctx);
