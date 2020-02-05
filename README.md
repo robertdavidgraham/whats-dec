@@ -25,7 +25,7 @@ bytes to the end of everything it encrypts, so this is not strange. This
 program decodes exactly what those extra bytes are, so that this fact can
 be verified.
 
-This means that of suspecting MBS, we can either covict him beyond a shadow
+This means that instead of suspecting MBS, we can either covict him beyond a shadow
 of a doubt, or completely exonerate him. If the encrypted file contains 
 an exploit or malware, we can know for certain. Likewise, if it doesn't,
 we'll know that for certain as well.
