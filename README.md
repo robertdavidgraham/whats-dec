@@ -43,17 +43,17 @@ It relies on no other dependency than the standard C library
 (all the crypto routines are included).
 Simply compile the files together, as in:
 
-  $ cc *.c -o whats-enc
+    $ cc *.c -o whats-enc
 
 There is also a Makefile in the directory:
 
-  $ make
-  $ make test
+    $ make
+    $ make test
 
 You need a C compiler, such as Microsoft Visual C, `gcc`, or `clang`. On Debian
 versions of Linux, this can be obtained by:
 
-  $ sudo apt install build-essential
+    $ sudo apt install build-essential
 
 ## Extracting end-to-end keys
 
@@ -76,6 +76,29 @@ This file contains an SQL database. Inside that debase is a table called
 `ZWAMEDIAITEM`. In that table are two columns of interest, `ZMEDIAULR` that
 is the download URL for the encrypted media file, and `ZMEDIAKEY` needed to
 decrypt it.
+
+The `ZMEDIAKEY` contains more than just the key we need. It is a "blob"
+containing binary data, which you can format in hex, as in the block
+below:
+
+    0a 20 31 67 ca 52 06 c6 e9 c3 5c 18 ea a0 5c 7e
+    d3 d3 72 4f 46 65 3d d6 85 8e d5 62 d3 f7 6b 25
+    58 90 12 20 70 21 23 08 1a 9f 8a c1 e2 80 29 b5
+    f7 82 87 99 83 8d 66 32 d8 2b ad 58 78 9c c1 4f
+    bb 80 90 bc 18 9f c4 e7 f1 05 20 01 
+
+This blob is structured with `protobufs` and has four
+fields. The first field contains the encryption key
+that we'll use for the next step. The first byte
+0a is the field tag, and the second byte 20 is the length
+of the key, in this case 0x20 or 32 bytes. The next
+32 bytes are the key, as in:
+
+          31 67 ca 52 06 c6 e9 c3 5c 18 ea a0 5c 7e
+    d3 d3 72 4f 46 65 3d d6 85 8e d5 62 d3 f7 6b 25
+    58 90 
+
+We use this key in the step below.
 
 ## Example usage
 
