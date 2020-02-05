@@ -12,6 +12,22 @@
 #include <string.h>
 #include <time.h>
 
+void base64_print(const char *prefix, const void *src, size_t length)
+{
+    unsigned char *buf = malloc(length*2);
+    size_t length2;
+    if (buf == NULL)
+        abort();
+    
+    length2 = base64_encode(buf, length*2, src, length);
+    if (length2 == (size_t)~0) {
+        printf("%s (error)\n", prefix);
+    } else {
+        printf("%s%.*s\n", prefix, (unsigned)length2, buf);
+    }
+    free(buf);
+}
+
 /*****************************************************************************
  *****************************************************************************/
 size_t base64_encode(void *vdst, size_t sizeof_dst, const void *vsrc,

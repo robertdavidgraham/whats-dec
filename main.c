@@ -170,7 +170,7 @@ static void parse_param(struct configuration *cfg, const char *name,
          * the file won't decrypt. We usually will determine this from
          * the output file extension, but if that doesn't work, the user
          * will need to manually configure this */
-        size_t t = get_media_type(name);
+        size_t t = get_media_type(value);
         if (t == 0) {
             fprintf(stderr,
                     "[-] unknown media type=%s. Valid parms: video, audio, "
@@ -241,12 +241,20 @@ void decrypt_stream(FILE *fp_in, FILE *fp_out, const unsigned char *mediakey,
                     size_t mediakey_length, enum MediaType mediatype) {
     unsigned char prevblock[16];
     size_t bytes_read;
+    size_t bytes_written;
     struct AES_ctx ctx;
     HMAC_CTX hmac;
+    SHA256_CTX filesha_ctx, encsha_ctx;
     unsigned char okm[112] = {0};
     unsigned char iv[16] = {0};
     unsigned char aeskey[32] = {0};
     unsigned char mackey[32] = {0};
+    unsigned padding_length;
+    unsigned last_length;
+    unsigned char tmp[32];
+    unsigned char block[16];
+
+    
 
     static const char *infostrings[6] = {
         /* first value is repeated when type is unknown */
@@ -255,12 +263,12 @@ void decrypt_stream(FILE *fp_in, FILE *fp_out, const unsigned char *mediakey,
     const char *info = infostrings[mediatype];
 
     /*
-     * Expand the key
-     * This is a common issue with encryption in that we need more than
-     * a simple 'key', but also an 'initialization vector' (aka. 'nonce')
-     * and a verification or 'message authentication code' key. Thus,
-     * we need to take the original input 'mediakey' and expand or stretch
-     * it using a pseudo-random function.
+     * Key expansion
+     * 
+     * The 32-byte "mediakey" needs to be expanded with a PRF to at least
+     * 80-bytes, from which we'll get a 16-byte initialization-vector/nonce,
+     * a 32-byte AES key, and a 32-byte MAC key. This is a fairly typical
+     * step in modern encryption.
      */
     crypto_hkdf(0, 0, mediakey, mediakey_length, info, strlen(info), okm,
                 sizeof(okm));
@@ -268,117 +276,141 @@ void decrypt_stream(FILE *fp_in, FILE *fp_out, const unsigned char *mediakey,
     memcpy(aeskey, okm + 16, sizeof(aeskey));
     memcpy(mackey, okm + 48, sizeof(mackey));
 
-    printf("[+] info = %s\n", info);
-    hex_print("[+] mediakey.iv = ", iv, sizeof(iv));
-    hex_print("[+] mediakey.aeskey = ", aeskey, sizeof(aeskey));
-    hex_print("[+] mediakey.mackey = ", mackey, sizeof(mackey));
+    printf("[a] info string = %s\n", info);
+    hex_print("[b] mediakey.iv = ", iv, sizeof(iv));
+    hex_print("[c] mediakey.aeskey = ", aeskey, sizeof(aeskey));
+    hex_print("[d] mediakey.mackey = ", mackey, sizeof(mackey));
 
     /*
-     * Initialize the decryptions. This starts the AES decryption,
-     * but also starts the hashing process to verify the integrity
-     * of the file.
+     * Initialize the decryptions.
+     * There are many things we calculate:
+     *  - AES - this is where we decrypt the contents
+     *  - HMAC - this verifies the contents haven't been intentionally
+     *    corrupted, modified, or tampered with.
+     *  - SHA(enc) - hash of the encrypted file (everything read)
+     *  - SHA(file) - hash of the decrypted file (everything written)
+     * The HMAC guards against corruption, while the hashes are used
+     * to identify this file.
      */
     AES_init_ctx_iv(&ctx, aeskey, iv);
     hmac_sha256_init(&hmac, mackey, 32);
     hmac_sha256_update(&hmac, iv, 16);
+    SHA256_Init(&filesha_ctx);
+    SHA256_Init(&encsha_ctx);
 
     /*
-     * Read in at least one full block
+     * Read in at least one full block. Since the last block
+     * will be a partial block, we end up working always one
+     * block behind.
      */
     bytes_read = fread(prevblock, 1, sizeof(prevblock), fp_in);
+    SHA256_Update(&encsha_ctx, prevblock, bytes_read);
     if (bytes_read != sizeof(prevblock)) {
         printf("[-] file too short (%u bytes read, expected at least 16)\n",
                (unsigned)bytes_read);
         exit(1);
     }
-    hmac_sha256_update(&hmac, prevblock, sizeof(prevblock));
-    AES_CBC_decrypt_buffer(&ctx, prevblock, sizeof(prevblock));
-    hex_print("[+] block[0] = ", prevblock, sizeof(prevblock));
 
-    /* Read in all blocks until the end of file */
+    /*
+     * Do all the crypto calculations on this block. These are the
+     * same set we do after each read below.
+     */
+    hmac_sha256_update(&hmac, prevblock, bytes_read);
+    AES_CBC_decrypt_buffer(&ctx, prevblock, bytes_read);
+    
+    /*
+     * We print the (decrypted) contents of the first block. This will
+     * give us a hint whether we've properly decryptd things, as it should
+     * look like the prologue to a JPEG, MP4, or whatever.
+     * We only do this for the first and last block, however, not every
+     * block.
+     */
+    hex_print("[e] block[0] = ", prevblock, bytes_read);
+
+    /*
+     * Read in all blocks until the end of file, doing the same
+     * crypto operations as above.
+     */
     for (;;) {
-        unsigned char block[16];
-        size_t bytes_written;
 
-        /*
-         * Read the next block
-         */
+        /* Read the next block */
         bytes_read = fread(block, 1, sizeof(block), fp_in);
+        SHA256_Update(&encsha_ctx, block, bytes_read);
 
-        /*
-         * If a full block, then process it
-         */
-        if (bytes_read == sizeof(block)) {
-            /* flush the previous block */
-            bytes_written = fwrite(prevblock, 1, sizeof(prevblock), fp_out);
-            if (bytes_written != sizeof(prevblock)) {
-                printf("[-] error writing decrypted output\n");
-                exit(1);
-            }
-
-            /* decrypt this block and store if for later */
-            memcpy(prevblock, block, sizeof(prevblock));
-            hmac_sha256_update(&hmac, prevblock, sizeof(prevblock));
-            AES_CBC_decrypt_buffer(&ctx, prevblock, sizeof(prevblock));
-            continue;
-        }
-
-        /* We've reached the end of the file. The current read needs to
-         * be 10-bytes long representing the 'MAC'. The previous block
-         * may be padded */
-        if (bytes_read != 10) {
-            printf("[-] expected 10 remaining bytes at end of file, found %u\n",
-                   (unsigned)bytes_read);
-            exit(1);
-        } else {
-            unsigned padding_length;
-            unsigned last_length;
-
-            /* The number of bytes of padding are given by the last byte in the
-             * the block, and should have a value from between [1..16]. If it's
-             * over that number, then it means corruption happened, in which the
-             * MAC (below) should also not check out */
-            padding_length = prevblock[15];
-            if (padding_length > 16) {
-                printf("[-] invalid padding length: %u (must be 16 or less)\n",
-                       padding_length);
-                padding_length = 16;
-            }
-
-            /* Here we print the last block, minus the padding. If the padding
-             * length is 16 bytes, then the final block will be empty */
-            last_length = sizeof(prevblock) - padding_length;
-            hex_print("[+] block[n] = ", prevblock, last_length);
-
-            /* Here we print the padding and MAC. These are additional [11..26]
-             * bytes at the end of the file that the FTI researchers falsely
-             * believed were an exploit or malware. */
-            hex_print("[+]-padding = ", prevblock + last_length,
-                      padding_length);
-            hex_print("[+]-mac = ", block, bytes_read);
-
-            /* Write the last block */
-            bytes_written = fwrite(prevblock, 1, last_length, fp_out);
-            if (bytes_written != last_length) {
-                printf("[-] error writing decrypted output\n");
-                exit(1);
-            }
-
-            /* calculate the expected MAC and see if they match */
-            {
-                unsigned char finalmac[32];
-                hmac_sha256_final(&hmac, finalmac, sizeof(finalmac));
-                hex_print("[+] MAC = ", finalmac, sizeof(finalmac));
-                if (memcmp(block, finalmac, 10) == 0) {
-                    printf("[+] matched! (verified not corrupted)\n");
-                } else {
-                    printf("[-] match failed (file corrupted)\n");
-                }
-            }
-
+        /* Stop reading when we reach an incomplete block */
+        if (bytes_read != sizeof(block))
             break;
+
+        /* Flush the previous block */
+        SHA256_Update(&filesha_ctx, prevblock, bytes_read);
+        bytes_written = fwrite(prevblock, 1, bytes_read, fp_out);
+        if (bytes_written != bytes_read) {
+            printf("[-] error writing decrypted output\n");
+            exit(1);
         }
+
+        /* decrypt this block and store if for later */
+        memcpy(prevblock, block, bytes_read);
+        hmac_sha256_update(&hmac, prevblock, bytes_read);
+        AES_CBC_decrypt_buffer(&ctx, prevblock, bytes_read);
     }
+
+    /* We've reached the end of the file. The current read needs to
+    * be 10-bytes long representing the 'MAC'. The previous block
+    * may be padded */
+    if (bytes_read != 10) {
+        printf("[-] expected 10 remaining bytes at end of file, found %u\n",
+            (unsigned)bytes_read);
+        exit(1);
+    }
+
+    /* The number of bytes of padding are given by the last byte in the
+     * the block, and should have a value from between [1..16]. If it's
+     * over that number, then it means corruption happened, in which the
+     * MAC (below) should also not check out */
+    padding_length = prevblock[15];
+    if (padding_length > 16) {
+        printf("[-] invalid padding length: %u (must be 16 or less)\n",
+                padding_length);
+        padding_length = 16;
+    }
+
+    /* Here we print the last block, minus the padding. If the padding
+     * length is 16 bytes, then the final block will be empty */
+    last_length = sizeof(prevblock) - padding_length;
+    hex_print("[f] block[n] = ", prevblock, last_length);
+
+    /* Here we print the padding and MAC. These are additional [11..26]
+     * bytes at the end of the file that the FTI researchers falsely
+     * believed were an exploit or malware. */
+    hex_print("[g]-padding = ", prevblock + last_length,
+                padding_length);
+    hex_print("[h]-mac = ", block, bytes_read);
+
+    /* Write the last block */
+    SHA256_Update(&filesha_ctx, prevblock, last_length);
+    bytes_written = fwrite(prevblock, 1, last_length, fp_out);
+    if (bytes_written != last_length) {
+        printf("[-] error writing decrypted output\n");
+        exit(1);
+    }
+
+    /* calculate the expected MAC and see if they match */
+    hmac_sha256_final(&hmac, tmp, sizeof(tmp));
+    hex_print("[i] MAC = ", tmp, sizeof(tmp));
+    if (memcmp(block, tmp, 10) == 0) {
+        printf("[j] matched! (verified unmodified)\n");
+    } else {
+        printf("[-] match failed (file corrupted)\n");
+    }
+
+    SHA256_Final(tmp, &filesha_ctx);
+    hex_print("[k] SHA256(file).hex = ", tmp, 32);
+    base64_print("[l] SHA256(file).b64 = ", tmp, 32);
+    SHA256_Final(tmp, &encsha_ctx);
+    hex_print("[m] SHA256(enc).hex = ", tmp, 32);
+    base64_print("[n] SHA256(enc).b64 = ", tmp, 32);
+    
 }
 
 int main(int argc, char *argv[]) {
@@ -388,7 +420,9 @@ int main(int argc, char *argv[]) {
     static const char *medianames[6] = {"video", "image", "video",
                                         "audio", "text",  "unknown"};
 
-    /* Read in the command-line configuration */
+    /* 
+     * Read in the command-line configuration 
+     */
     cfg = parse_command_line(argc, argv);
 
     /*
@@ -400,12 +434,18 @@ int main(int argc, char *argv[]) {
     }
     if (cfg.infilename[0] == '\0') {
         fprintf(stderr,
-                "[-] missing input file, use '--infilename' parameter\n");
+                "[-] missing input file, use '--in' parameter\n");
         return 1;
     }
     if (cfg.outfilename[0] == '\0') {
         fprintf(stderr,
-                "[-] missing output file, use '--outfilename' parameter\n");
+                "[-] missing output file, use '--out' parameter\n");
+        return 1;
+    }
+    if (cfg.mediatype == 0) {
+        fprintf(stderr,
+                "[-] unknown media type, use '--type' parameter"
+                " with 'video', 'image', 'audio', or 'text'\n");
         return 1;
     }
 

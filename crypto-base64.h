@@ -9,6 +9,8 @@
 #define CRYPTO_BASE64_H
 #include <stddef.h>
 
+void base64_print(const char *prefix, const void *src, size_t length);
+
 /**
  * Decodes a string.
  * @return
